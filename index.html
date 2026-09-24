@@ -545,6 +545,11 @@ const RADIO_MIN2   = 100;     // r² mínimo (evita singularidades en r = 0)
 const BLOCK        = 8;       // tamaño de bloque del mapa de calor (px)
 const MAX_PART     = 40;      // máximo de partículas simultáneas
 
+/* --- Parámetros de las líneas de campo (ahora más gruesas y con flechas) --- */
+const LINE_WIDTH       = 2.2;     // grosor de las líneas de campo (antes 1.25)
+const ARROW_EVERY      = 20;      // colocar una flecha cada N puntos de la polilínea
+const ARROW_SIZE       = 9;       // tamaño (px) de cada punta de flecha
+
 let W = 0, H = 0, DPR = 1;    // dimensiones lógicas y densidad de píxeles
 
 const charges   = [];         // { x, y, q }
@@ -692,7 +697,47 @@ function resize() {
    Se trazan "streamlines" siguiendo la dirección del vector E.
    Se siembran desde las cargas positivas (hacia fuera); si no hay
    ninguna positiva, se siembran desde las negativas hacia atrás.
+
+   CAMBIOS SOLICITADOS:
+     - Líneas más gruesas (LINE_WIDTH = 2.2).
+     - Puntas de flecha que indican la dirección real del campo.
    ============================================================ */
+
+/**
+ * Dibuja una punta de flecha sobre el segmento p0→p1.
+ * `dir` es +1 cuando el recorrido de la polilínea coincide con el
+ * sentido del campo, y -1 cuando se ha trazado en sentido inverso
+ * (caso de cargas negativas aisladas). Así la flecha siempre apunta
+ * en la dirección física real de E.
+ */
+function drawFieldArrow(p0, p1, dir) {
+  let dx = (p1.x - p0.x) * dir;
+  let dy = (p1.y - p0.y) * dir;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return;
+  dx /= len;
+  dy /= len;
+
+  // Vector perpendicular (para construir la base del triángulo)
+  const px = -dy;
+  const py =  dx;
+
+  const h  = ARROW_SIZE * 0.5;        // mitad del largo de la flecha
+  const bw = ARROW_SIZE * 0.42;       // semi-ancho de la base
+
+  const ax = p0.x;                    // centro de la flecha
+  const ay = p0.y;
+
+  fieldCtx.beginPath();
+  // Punta
+  fieldCtx.moveTo(ax + dx * h, ay + dy * h);
+  // Base izquierda
+  fieldCtx.lineTo(ax - dx * h + px * bw, ay - dy * h + py * bw);
+  // Base derecha
+  fieldCtx.lineTo(ax - dx * h - px * bw, ay - dy * h - py * bw);
+  fieldCtx.closePath();
+  fieldCtx.fill();
+}
 
 /** Traza una línea de campo desde (x0, y0) en la dirección `dir` (+1 / -1). */
 function traceLine(x0, y0, dir) {
@@ -701,8 +746,8 @@ function traceLine(x0, y0, dir) {
 
   let x = x0, y = y0;
 
-  fieldCtx.beginPath();
-  fieldCtx.moveTo(x, y);
+  // Recolectamos los puntos para poder dibujar la polilínea y las flechas
+  const pts = [{ x: x, y: y }];
 
   for (let i = 0; i < MAX_STEP; i++) {
     const f   = fieldAt(x, y);
@@ -714,7 +759,7 @@ function traceLine(x0, y0, dir) {
     x += dir * h * (f.ex / mag);
     y += dir * h * (f.ey / mag);
 
-    fieldCtx.lineTo(x, y);
+    pts.push({ x: x, y: y });
 
     // Fuera del lienzo (con margen) -> terminamos
     if (x < -60 || x > W + 60 || y < -60 || y > H + 60) break;
@@ -729,7 +774,23 @@ function traceLine(x0, y0, dir) {
     if (near) break;
   }
 
+  if (pts.length < 2) return;
+
+  // --- 1) Dibujamos la polilínea con halo suave ---
+  fieldCtx.shadowColor = 'rgba(80, 170, 255, 0.55)';
+  fieldCtx.shadowBlur  = 5;
+  fieldCtx.beginPath();
+  fieldCtx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    fieldCtx.lineTo(pts[i].x, pts[i].y);
+  }
   fieldCtx.stroke();
+  fieldCtx.shadowBlur = 0;                 // desactivamos el halo para las flechas
+
+  // --- 2) Dibujamos las puntas de flecha a lo largo de la línea ---
+  for (let i = ARROW_EVERY; i < pts.length - 1; i += ARROW_EVERY) {
+    drawFieldArrow(pts[i], pts[i + 1], dir);
+  }
 }
 
 /** Siembra líneas alrededor de una carga concreta. */
@@ -751,11 +812,12 @@ function renderFieldLines() {
 
   if (charges.length === 0) return;
 
-  fieldCtx.lineWidth   = 1.25;
+  /* --- Estilo de las líneas (más gruesas y más visibles) --- */
+  fieldCtx.lineWidth   = LINE_WIDTH;
   fieldCtx.lineCap     = 'round';
-  fieldCtx.strokeStyle = 'rgba(130, 200, 255, 0.42)';
-  fieldCtx.shadowColor = 'rgba(80, 170, 255, 0.55)';
-  fieldCtx.shadowBlur  = 4;
+  fieldCtx.lineJoin    = 'round';
+  fieldCtx.strokeStyle = 'rgba(140, 205, 255, 0.58)';
+  fieldCtx.fillStyle   = 'rgba(200, 235, 255, 0.95)';  // color de las flechas
 
   // ¿Hay alguna carga positiva? Si la hay, sembramos solo desde ellas.
   const hasPos = charges.some(function (c) { return c.q > 0; });
@@ -770,8 +832,6 @@ function renderFieldLines() {
       if (charges[i].q < 0) seedFromCharge(charges[i], -1);
     }
   }
-
-  fieldCtx.shadowBlur = 0; // reseteamos la sombra
 }
 
 /* ============================================================
@@ -910,7 +970,7 @@ function stepParticles() {
 
   trailCtx.lineCap   = 'round';
   trailCtx.lineJoin  = 'round';
-  trailCtx.lineWidth = 2;
+  trailCtx.lineWidth = 3;          // rastro un poco más grueso (antes 2)
 
   const SUB = 4;          // subpasos por fotograma (estabilidad)
   const dt  = 1 / SUB;
@@ -1010,30 +1070,34 @@ function drawCharges() {
   }
 }
 
-/** Dibuja las partículas de prueba en movimiento. */
+/**
+ * Dibuja las partículas de prueba en movimiento.
+ * CAMBIO: ahora son notablemente más grandes (núcleo r=7, halo r=24)
+ * para que se distingan bien incluso a simple vista.
+ */
 function drawParticles() {
   for (let i = 0; i < particles.length; i++) {
     const p = particles[i];
 
-    // Halo
-    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 16);
+    // Halo exterior (más amplio)
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 24);
     g.addColorStop(0, p.color);
     g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.globalAlpha = 0.55;
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 24, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    // Núcleo
+    // Núcleo más grande (antes 4.2)
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 4.2, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
     ctx.fillStyle = p.color;
     ctx.fill();
 
-    ctx.lineWidth   = 1.4;
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth   = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.stroke();
   }
 }
